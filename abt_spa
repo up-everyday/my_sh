@@ -1,0 +1,8 @@
+#!/bin/ksh
+spalist="DIAMCL183 DROUTER183 ECTRL183  EPAY183  ENWTPPS183 EPPSA183 EPPSM183 GATEWAY183 NWTCOM112 NWTGSM066"
+cmdstr=""
+for spa in $spalist
+do
+cmdstr=${cmdstr}"abt:spa=$spa;y;"
+done
+echo ${cmdstr} | /cs/sn/cr/textsh -F
