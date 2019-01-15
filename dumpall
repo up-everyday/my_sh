@@ -1,0 +1,250 @@
+#!/bin/ksh
+#
+# $Id: dumpall, dump service data from EE/ATCA/MAS
+#
+#set -x
+
+# plat table will be backup
+
+usage()
+{
+    print "DESCRIPTION:"
+    print "\tDumping SPA-SIT-related tables: all SPA/RTDB config tables, "
+    print "\tand partail PLATFORM tables. "
+    print "USAGE:  \n\t$(basename $0) -[a|p|r|s] [-h PGHOST] [-U PGUSER] [-P PGPORT] [-d dir]"
+    print "\t-a\tdump all SPA/RTDB config tables, and partail PLATFORM tables."
+    print "\t-p\tonly dump platform data"
+    print "\t-r\tonly dump RTDB data"
+    print "\t-s\tonly dump SPA data"
+    print "\t-h PGHOST\tdatabase server host"
+    print "\t-U PGUSER\tdatabase user name"
+    print "\t-P PGPORT\tdatabase server port"
+    print "\t-d dir\tthe destination directory to store backup"
+    print "EXAMPLE:"
+    print "\t$(basename $0) -p -d ITU"
+    print "\t$(basename $0) -a -d PT105.GN"
+    exit 1
+}
+
+if [ "$#" = "0" ];then
+	usage
+fi	
+
+SPMAN_TBL="spa_tbl spa_params sa_name_map sa_param sa_ssn sa_ssnresmng sa_node"
+
+LDAP_TBL="ti_config ti_entry ti_exit ti_dv_authen ti_dataview ti_param"
+
+DIAM_TBL="is_config  diam_adj_host diam_dest_rt diam_local_host diam_vs_appId diam_ssn_appId  diam_tcp_hostname"
+
+OTHER_TBL="cr_feature sh_timed meas_mstr"
+
+S77_TBL="param_scp s7_alias_pc s7_board s7_linkset s7_local_ssn s7_remote_stp s7_link s7_lk_timer s7_pointcode s7_rpi"
+
+SIGTRAN_TBL="sg_sctphost sg_asp sg_sgp sg_asso sg_as sg_sg sg_pc sg_rasp sg_ras param_scp s7_cluster_param s7_lan  s7_adjacent_sep"
+
+PLATTBLS="${SPMAN_TBL} ${LDAP_TBL} $DIAM_TBL $OTHER_TBL $S77_TBL"
+
+date
+DUMPALL=false
+ONLYPLAT=false
+ONLYRTDB=false
+ONLYSPA=false
+PSQLVER=""
+PSQL=psql
+PGDUMP=pg_dump
+
+OLDPATH=$(pwd)
+BASENAME=$(basename $0)
+DIRNAME="$(pwd)/$(dirname $0)"
+SILIENT_STR="psql -h pglocalhost -U scncraft <<!eof"
+
+if [ -z "$PGHOST" ]; then
+	PGHOST=pglocalhost
+fi
+if [ -z "$PGPORT" ]; then
+	PGPORT=5333
+fi
+if [ -z "$PGDATABASE" ]; then
+	PGDATABASE=A
+fi
+if [ -z "$PGUSER" ]; then
+	if [ -d "/platdb" ]; then
+		PGUSER=scncraft
+	else 
+		PGUSER=$(who am i|awk '{print $1}')
+	fi
+fi
+
+dump_spa_ptbl()
+{
+typeset spa_name="$1"
+typeset owner_name="$PGUSER"
+typeset -u spa_name owner_name
+
+typeset SPAS=$(print "select table_name from all_tables where owner='$owner_name' and table_name like '%$spa_name%' and table_name not like '%${spa_name}_MEAS%';"|$SQL)
+typeset -l SPAS
+
+typeset spa_tbl=""
+for spa_tbl in $SPAS
+do
+	touch $spa_tbl.sql
+	$DUMP $spa_tbl -f $spa_tbl.sql &
+done
+
+while [ $(jobs|grep Running|wc -l) -gt 0 ]; do
+	print ".\c"
+	sleep 5	
+done
+
+> $spa_name.sql
+print "$SILIENT_STR" > $spa_name.sql
+for spa_tbl in $SPAS; do
+	print "TRUNCATE TABLE $spa_tbl;" >> $spa_name.sql
+	grep INSERT $spa_tbl.sql >>$spa_name.sql
+	rm -rf $spa_tbl.sql
+done
+cat <<EOF>> $spa_name.sql
+COMMIT;
+!eof
+EOF
+
+chmod gou+rx  ${spa_name}.sql
+return 0
+}
+
+gen_rst_sql()
+{
+typeset _SQLTBL_NAME_="$1"
+typeset -l _SQLTBL_NAME_
+print "$SILIENT_STR" >$_SQLTBL_NAME_.sql
+print "TRUNCATE TABLE $_SQLTBL_NAME_;" >> $_SQLTBL_NAME_.sql
+$DUMP $_SQLTBL_NAME_ |grep -i "^INSERT" >> $_SQLTBL_NAME_.sql
+cat <<EOF>> $_SQLTBL_NAME_.sql
+COMMIT;
+!eof
+EOF
+
+chmod gou+rx  ${_SQLTBL_NAME_}.sql
+return 0
+}
+
+while getopts :d:h:U:P:aprs OPTION
+do
+case $OPTION in 
+a)DUMPALL=true
+    ;;
+p)ONLYPLAT=true
+    ;;
+r)ONLYRTDB=true
+    ;;
+s)ONLYSPA=true
+    ;;
+d)DIR=$OPTARG
+    ;;
+h)PGHOST=$OPTARG
+    ;;
+U)PGUSER=$OPTARG
+    ;;
+P)PGPORT=$OPTARG
+    ;;
+\?)
+    usage
+    ;;
+esac
+done
+shift $((OPTIND-1))
+
+if [ $DUMPALL = false -a $ONLYPLAT = false -a $ONLYRTDB = false -a $ONLYSPA = false ]; then
+	usage
+fi
+
+if [ -n "$DIR" ]; then
+    mkdir -p $DIR > /dev/null 2>&1
+    if [ ! -d $DIR ]; then
+			print "ERROR: fail to create the directory '$DIR' !";
+			usage
+    fi
+    cd $DIR;
+fi
+
+# determine SQL provider
+
+FE=$(which $PSQL $PGDUMP|egrep "^no"|wc -l|awk '{print $1}')
+if [ "$FE" = "0" ]; then
+    PSQLVER=$($PSQL --version 2>&1|grep PostgreSQL|wc -l|awk '{print $1}')
+		if [ "$PSQLVER" = "1" ]; then
+			PSQLVER=$($PGDUMP --version 2>&1|grep PostgreSQL|wc -l|awk '{print $1}')
+		fi
+fi
+
+if [ ! "$PSQLVER" = "1" ]; then
+    print "ERROR: psql/pg_dump not exist on the system"
+    exit
+fi
+
+export PGHOST PGUSER PGPORT PGDATABASE
+SQL="$PSQL -q -t"
+DUMP="$PGDUMP -aO --inserts -t "
+PSTATUS=" "
+PSTATUS=$(print "\\q" | $SQL 2>&1)
+if [ -n "$PSTATUS" ]; then 
+	print "\nConnect database server using \"$SQL\" failed for:\n\t$PSTATUS\n"
+	usage
+fi	
+
+if [ ! $PGUSER = "scncraft" ]; then
+    SILIENT_STR="psql -U \$DB_LOGIN <<!eof"
+fi
+
+# partail PLATFORM tables
+
+if [ $ONLYPLAT = true -o $DUMPALL = true ]; then
+print "dumping PLATFORM tables \c"
+for i in $PLATTBLS
+do
+	gen_rst_sql ${i}
+	print ".\c"
+done
+print " done!"
+fi
+
+# All RTDB config tables
+
+if [ $ONLYRTDB = true -o $DUMPALL = true ]; then
+print "dumping RTDB tables \c"
+# for ATCA/Vmware, can not get installed rtdb from initlist on pilot
+RDBLS=$(print "select db_name from rtdb_app where db_name not similar to 'NDB|BDB|HLRV|HLRNV';" | $SQL)
+for i in $RDBLS
+do
+	gen_rst_sql ${i}_cfg
+	gen_rst_sql ${i}_tbl
+	gen_rst_sql ${i}_dct
+	print ".\c"
+done
+print " done!"
+fi
+
+# SPA tables
+
+if [ $ONLYSPA = true -o $DUMPALL = true ]; then
+print "dumping SPA tables \c"
+SPA=$(print "select span from sa_spa;" | $SQL)
+
+for i in $SPA
+do
+        dump_spa_ptbl ${i} 
+				if [ "$PGUSER" = "scncraft" ]; then
+	        cp /sn/sps/${i}/${i}.sym ./
+				else
+	        cp $MYNODE/sn/sps/${i}/${i}.sym ./
+				fi
+	print ".\c"
+done
+print " done!"
+fi
+
+date
+if [ $DUMPALL = false ]; then
+    exit 0
+fi
+cd $OLDPATH
