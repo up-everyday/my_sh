@@ -1,0 +1,93 @@
+#!/bin/ksh
+
+function del_db
+{
+for db in $dba
+do
+Configure_RTDB -fr $db
+done
+}
+
+function cre_db
+{
+dblist=$( echo "op:status,db=all" |/cs/sn/cr/textsh -F | grep -B3 EXIST | sed -n '/^   \w\+$/p')
+cmdstr=""
+for db in $dblist
+do 
+cmdstr=${cmdstr}"create:db=$db;y;" 
+done
+echo ${cmdstr} | /cs/sn/cr/textsh -F
+}
+
+function del_init
+{
+dblist=$( echo "op:status,db=all" |/cs/sn/cr/textsh -F | grep -B3 "INIT_INPROG2" | sed -n '/^   \w\+$/p')
+for db in $dblist
+do
+/cs/sn/bin/Configure_RTDB -fr $db
+done
+}
+
+function del_mate
+{
+/platdb/bin/psql -U scncraft -h pglocalhost -d A -q -A -c "delete from ti_entry where treatment='MATEUPD';"
+/platdb/bin/psql -U scncraft -h pglocalhost -d A -q -A -c "delete from ti_exit where treatment='MATEUPD';"
+/platdb/bin/psql -U scncraft -h pglocalhost -d A -q -A -c "update acmdb104_cfg set ctl_value='N' where ctl_field='GDO_SEND_DELAY';"
+for db in $dba
+do
+/platdb/bin/psql -U scncraft -h pglocalhost -d A -q -A -c "update ${db}_cfg set ctl_value='N' where ctl_field='MATE_UPDATE';"
+done
+}
+
+
+function rmv_db
+{
+cmdstr=""
+for db in $dba
+do
+cmdstr=${cmdstr}"rmv:db=$db;y;"
+done
+echo ${cmdstr} |/cs/sn/cr/textsh -F
+}
+
+function rst_db
+{
+if [ -z  $dba ]
+then
+   dba=`cat /tmp/db.list`
+else
+   rmv_db
+fi
+cmdstr=""
+for db in $dba
+do
+cmdstr=${cmdstr}"rst:db=$db;"
+done
+echo ${cmdstr} |/cs/sn/cr/textsh -F
+}
+
+function Usage
+{
+  print "usage: op_db del_db|del_init|del_mate|cre_db|rmv_db|rst_db"
+  print "       del_db:   to delete all rtdbs"
+  print "       del_init: to delete all INIT_INPROG2 dbs"
+  print "       del_mate: to delete mate configures"
+  print "       cre_db:   to recover all EXSIT dbs"
+  print "       rmv_db:   to remove all dbs"
+  print "       rst_db:   to restart all dbs"
+  exit
+}
+
+ 
+if [ -z $1 ] || ! echo  "del_db del_init del_mate cre_db rmv_db rst_db" | grep  -q "$1" >/dev/null 2>&1
+then
+  Usage
+else
+  dba=""
+  dba=$(echo "op:status,db=all" |/sn/cr/textsh -F | grep "^   \w\+$")
+  if [ -n "$dba" ]
+  then
+    echo $dba > /tmp/db.list
+  fi
+  eval $1
+fi
